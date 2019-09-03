@@ -1178,7 +1178,7 @@ void CkMemCheckPT::recoverAll(CkArrayCheckPTMessage * msg,std::vector<CkGroupID>
 			p|idx;
                         p|id;
 			CkLocMgr * mgr = (CkLocMgr *)CkpvAccess(_groupTable)->find(gID).getObj();
-    			int homePe = mgr->homePe(idx);
+    	int homePe = mgr->homePe(idx);
 #if !STREAMING_INFORMHOME && CK_NO_PROC_POOL
 			mgr->resume(idx, id, p, true, true);
 #else
