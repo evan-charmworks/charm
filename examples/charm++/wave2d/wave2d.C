@@ -9,10 +9,14 @@
 #define TotalDataHeight 800
 #define chareArrayWidth  16
 #define chareArrayHeight  16
-#define total_iterations 5000
+#define total_iterations 50000
 #define numInitialPertubations 5
+#define addDropIter 1000
 
 #define mod(a,b)  (((a)+b)%b)
+
+/*readonly*/ CProxy_Wave waveProxy;
+/*readonly*/ CProxy_CcsGroup ccsProxy;
 
 enum { left=0, right, up, down };
 
@@ -26,15 +30,75 @@ public:
 
     // Create new array of worker chares
     CkArrayOptions opts(chareArrayWidth, chareArrayHeight);
-    CProxy_Wave arrayProxy = CProxy_Wave::ckNew(opts);
+    waveProxy = CProxy_Wave::ckNew(opts);
 
     // setup liveviz
-    CkCallback c(CkIndex_Wave::requestNextFrame(0),arrayProxy);
+    CkCallback c(CkIndex_Wave::requestNextFrame(0), waveProxy);
     liveVizConfig cfg(liveVizConfig::pix_color,true);
-    liveVizInit(cfg,arrayProxy,c, opts);
+    liveVizInit(cfg, waveProxy, c, opts);
+    ccsProxy = CProxy_CcsGroup::ckNew();
 
     //Start the computation
-    arrayProxy.begin_iteration();
+    waveProxy.begin_iteration();
+  }
+};
+
+class CcsGroup : public CBase_CcsGroup {
+private:
+  std::vector<int> perf_data;
+public:
+  CcsGroup() {
+    if (CkMyPe() == 0) {
+      registerHandlers();
+      perf_data.push_back(0);
+    }
+  }
+
+  CcsGroup(CkMigrateMessage* m) {}
+
+  void registerHandlers() {
+    CcsRegisterHandler("lvImageInteraction",
+        CkCallback(CkIndex_CcsGroup::add_drop(NULL), thisProxy[0]));
+    CcsRegisterHandler("lvStatRequest",
+        CkCallback(CkIndex_CcsGroup::requestPerfData(NULL), thisProxy[0]));
+  }
+
+  void pup(PUP::er& p) {
+    p | perf_data;
+    if (p.isRestarting() && thisIndex == 0) {
+      thisProxy[thisIndex].registerHandlers();
+    }
+  }
+
+  void add_drop(CkCcsRequestMsg* m) {
+    CkAssert(CkMyPe() == 0);
+    int x, y, dropped;
+    PUP_toNetwork_unpack p(m->data);
+    p | x;
+    p | y;
+
+    int xChare = x / (TotalDataWidth / chareArrayWidth);
+    int yChare = y / (TotalDataHeight / chareArrayHeight);
+    waveProxy(xChare, yChare).add_drop(x, y);
+
+    dropped = 1;
+    CcsSendDelayedReply(m->reply, sizeof(int), &dropped);
+    delete m;
+  }
+
+  void requestPerfData(CkCcsRequestMsg* msg) {
+    CkAssert(CkMyPe() == 0);
+    CcsSendDelayedReply(msg->reply, sizeof(int) * perf_data.size(), perf_data.data());
+    delete msg;
+    perf_data.clear();
+    perf_data.push_back(0);
+  }
+
+  void addPerfData(int iter, int ms_per_iter) {
+    CkAssert(CkMyPe() == 0);
+    perf_data.push_back(iter);
+    perf_data.push_back(ms_per_iter);
+    perf_data[0]++;
   }
 };
 
@@ -57,8 +121,13 @@ public:
 
   int iteration;
 
+  bool started_timer;
+  double start_time;
+
   Wave()
   {
+    usesAtSync = true;
+
     iteration = 0;
 
     CommonInit();
@@ -92,6 +161,8 @@ public:
     intensity = new unsigned char[3 * mywidth * myheight];
 
     messages_due = 4;
+
+    started_timer = false;
   }
 
   // Setup some Initial pressure pertubations for timesteps t-1 and t
@@ -127,6 +198,8 @@ public:
     CBase_Wave::pup(p);
 
     p|iteration;
+    p|started_timer;
+    p|start_time;
 
     size_t size = mywidth * myheight;
 
@@ -151,7 +224,29 @@ public:
     delete [] intensity;
   }
 
+  void add_drop(int x, int y)
+  {
+    // Determine where to place a circle within the interior of the 2-d domain
+    int xcenter = x - (mywidth * thisIndex.x);
+    int ycenter = y - (myheight * thisIndex.y);
+    int radius = 5+rand() % 10;
+    // Draw the circle
+    for(int i=0;i<myheight;i++){
+      for(int j=0; j<mywidth; j++){
+	  double distanceToCenter = sqrt((j-xcenter)*(j-xcenter) + (i-ycenter)*(i-ycenter));
+	  if (distanceToCenter < radius) {
+	    double rscaled = (distanceToCenter/radius)*3.0*3.14159/2.0; // ranges from 0 to 3pi/2 
+	    double t = 700.0 * cos(rscaled) ; // Range won't exceed -700 to 700
+	    pressure[i*mywidth+j] = pressure_old[i*mywidth+j] = t;
+	  }
+      }
+    }
+  }
   void begin_iteration(void) {
+    if (!started_timer) {
+      started_timer = true;
+      start_time = CmiWallTimer();
+    }
 
     double *top_edge = &pressure[0];
     double *bottom_edge = &pressure[(myheight-1)*mywidth];
@@ -181,7 +276,6 @@ public:
     if (--messages_due == 0) {
 
       // Compute the new values based on the current and previous step values
-
       for(int i=0;i<myheight;++i){
 	for(int j=0;j<mywidth;++j){
 
@@ -199,6 +293,8 @@ public:
 
 	  // Compute the future time's pressure for this array location
 	  pressure_new[i*mywidth+j] = 0.4*0.4*(L+R+U+D - 4.0*curr)-old+2.0*curr;
+	  // overdamp
+	  pressure_new[i*mywidth+j] *= 0.9995;
 
 	}
       }
@@ -212,6 +308,7 @@ public:
       messages_due = 4;
       contribute(sizeof(int), &iteration, CkReduction::min_int, CkCallback(CkReductionTarget(Wave, iterationCompleted), thisProxy(0, 0)));
       ++iteration;
+      if (iteration % 20 == 0) AtSync();
     }
   }
 
@@ -272,7 +369,13 @@ public:
 	CkExit();
       } else {
 	// Start the next iteration
-	if(iteration % 20 == 0) CkPrintf("Completed %d iterations\n", iteration);
+	if(iteration % 20 == 0) {
+    CkPrintf("Completed %d iterations\n", iteration);
+    double curr_time = CmiWallTimer();
+    double total_time = curr_time - start_time;
+    ccsProxy[0].addPerfData(iteration, (int)(total_time * 1000) / 20);
+    started_timer = false;
+  }
 #ifdef CMK_MEM_CHECKPOINT
       if (iteration != 0 && iteration % 200 == 0)
       {
@@ -284,6 +387,14 @@ public:
       {
 	thisProxy.begin_iteration();
       }
+    }
+    // randomly add drops every addDropIter
+    if(iteration >1 && iteration % addDropIter ==0){
+      int dropx=rand() % TotalDataWidth;
+      int dropy=rand() % TotalDataWidth;
+      int charex = dropx / (TotalDataWidth / chareArrayWidth);
+      int charey = dropy / (TotalDataHeight / chareArrayHeight);
+      thisProxy(charex, charey).add_drop(dropx, dropy);
     }
   }
 };

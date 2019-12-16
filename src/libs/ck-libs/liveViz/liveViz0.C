@@ -9,6 +9,7 @@ Orion Sky Lawlor, olawlor@acm.org, 6/2002
 #include "conv-ccs.h"
 #include <sys/types.h>
 #include "liveViz0.h"
+#include "liveViz.h"
 #include "pup_toNetwork.h"
 
 

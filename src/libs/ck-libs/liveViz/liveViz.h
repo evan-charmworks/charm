@@ -10,6 +10,7 @@
 #include "ckimage.h"
 #include "colorScale.h"
 #include "pup_toNetwork.h"
+#include "BaseLB.h"
 
 /********************** LiveViz ***********************/
 #include "liveViz.decl.h"
@@ -146,6 +147,153 @@ public:
 	}
 };
 
+class LiveVizBalanceGroup : public CBase_LiveVizBalanceGroup {
+private:
+  CkGroupID lbdbID;
+  LBDatabase* lbdb;
+  int* data;
+  int data_size;
+  bool balancingOn;
 
+public:
+  LiveVizBalanceGroup() {
+    lbdbID = _lbdb;
+    lbdb = (LBDatabase*)CkLocalBranch(lbdbID);
+    lbdb->AddLocalBarrierReceiver((LDResumeFn)staticRecvAtSync, (void*)this);
+    lbdb->AddMigrationDoneFn(staticDoneLB, (void*)this);
+
+    data_size = CkNumPes() * 4 + 1;
+    data = new int[data_size];
+    data[0] = CkNumPes();
+    for (int i = 0; i < CkNumPes(); i++) {
+      data[(i*4)+1] = i;
+      data[(i*4)+2] = data[(i*4)+3] = data[(i*4)+4] = 0;
+    }
+
+    for (int i = 0; i < lbdb->getNLoadBalancers(); i++) {
+      lbdb->getLoadBalancers()[0]->turnOff();
+    }
+    balancingOn = false;
+    if (thisIndex == 0)
+      registerCallbacks(); // don't need to go through the scheduler
+  }
+
+  LiveVizBalanceGroup(CkMigrateMessage* m) : CBase_LiveVizBalanceGroup(m) { }
+
+  void pup(PUP::er& p) {
+    p | balancingOn;
+    if (p.isUnpacking()) {
+      lbdbID = _lbdb;
+      lbdb = (LBDatabase*)CkLocalBranch(lbdbID);
+      lbdb->AddLocalBarrierReceiver((LDResumeFn)staticRecvAtSync, (void*)this);
+      lbdb->AddMigrationDoneFn(staticDoneLB, (void*)this);
+      data_size = CkNumPes() * 4 + 1;
+      data = new int[data_size];
+      data[0] = CkNumPes();
+      for (int i = 0; i < CkNumPes(); i++) {
+        data[(i*4)+1] = i;
+        data[(i*4)+2] = data[(i*4)+3] = data[(i*4)+4] = 0;
+      }
+      if (!balancingOn) {
+        for (int i = 0; i < lbdb->getNLoadBalancers(); i++) {
+          lbdb->getLoadBalancers()[0]->turnOff();
+        }
+      }
+      if (p.isRestarting() && thisIndex == 0) {
+        thisProxy[thisIndex].registerCallbacks(); // need to go through the scheduler
+      }
+    }
+  }
+
+  void registerCallbacks() {
+    CcsRegisterHandler("lvBalanceData", CkCallback(CkIndex_LiveVizBalanceGroup::lbDataRequest(NULL), thisProxy[0]));
+  CcsRegisterHandler("lvBalanceInteraction", CkCallback(CkIndex_LiveVizBalanceGroup::doBalanceRequest(NULL), thisProxy[0]));
+  }
+
+  static void staticRecvAtSync(void* data) {
+    ((LiveVizBalanceGroup*)data)->recvAtSync();
+  }
+
+  static void staticDoneLB(void* data) {
+    ((LiveVizBalanceGroup*)data)->doneLB();
+  }
+
+  void recvAtSync() {
+    int osz = lbdb->GetObjDataSz();
+    LDObjData* objData = new LDObjData[osz]; 
+    lbdb->GetObjData(objData);
+    
+    double wt, cput, idle, bgwt, bgcpu;
+    lbdb->GetTime(&wt, &cput, &idle, &bgwt, &bgcpu);
+
+    int len = (osz*2) + 4;
+    int* buf = new int[len];
+    buf[0] = CkMyPe();
+    buf[1] = (int)(bgwt * 1000);
+    buf[2] = (int)(idle * 1000);
+    buf[3] = osz;
+    for (int i = 0; i < osz; i++) {
+      buf[(i*2)+4] = (int)objData[i].id();
+      buf[(i*2)+5] = (int)(objData[i].wallTime * 1000);
+    }
+
+    contribute(sizeof(int) * len, buf, CkReduction::concat,
+        CkCallback(CkReductionTarget(LiveVizBalanceGroup, gatherData),
+            thisProxy[0]));
+    delete[] buf;
+
+    if (!balancingOn) {
+      lbdb->ResumeClients();
+      lbdb->ClearLoads();
+    }
+  }
+
+  void doneLB() {
+    balancingOn = false;
+    for (int i = 0; i < lbdb->getNLoadBalancers(); i++) {
+      lbdb->getLoadBalancers()[0]->turnOff();
+    }
+  }
+
+  void doBalanceRequest(CkCcsRequestMsg* msg) {
+    thisProxy.doBalance();
+    int x;
+    if (lbdb->getNLoadBalancers() > 0) {
+      x = 1;
+    } else {
+      x = 0;
+    }
+    CcsSendDelayedReply(msg->reply, sizeof(int), &x);
+    delete msg;
+  }
+
+  void doBalance() {
+    if (lbdb->getNLoadBalancers() > 0) {
+      lbdb->getLoadBalancers()[0]->turnOn();
+      balancingOn = true;
+    } else {
+      CmiPrintf("Can't turn on load balancing, no LB specified!\n");
+    }
+  }
+
+  void lbDataRequest(CkCcsRequestMsg* m) {
+    sendReply(m->reply);
+    delete m;
+  }
+
+  void gatherData(int* d, int n) {
+    delete[] data;
+    data_size = n+1;
+    data = new int[data_size];
+
+    int total_pes = CkNumPes();
+    data[0] = total_pes;
+    memcpy(&(data[1]), d, n*sizeof(int));
+  }
+
+  void sendReply(CcsDelayedReply replyTag) {
+    CcsSendDelayedReply(replyTag, data_size * sizeof(int), data);
+  }
+};
 
 #endif /* def(thisHeader) */
