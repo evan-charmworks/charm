@@ -167,10 +167,15 @@ int CpuTopology::numNodes = 0;
 std::vector<int> *CpuTopology::bynodes = NULL;
 int CpuTopology::supported = 0;
 
+static inline bool operator< (const skt_ip_t & a, const skt_ip_t & b)
+{
+  return memcmp(&a, &b, sizeof(a)) < 0;
+}
+
 namespace CpuTopoDetails {
 
 static nodeTopoMsg *topomsg = NULL;
-static std::vector<skt_ip_t> hostTable;
+static std::map<skt_ip_t, _procInfo *> hostTable;
 
 CpvStaticDeclare(int, cpuTopoHandlerIdx);
 CpvStaticDeclare(int, cpuTopoRecvHandlerIdx);
@@ -229,20 +234,14 @@ static void cpuTopoHandler(void *m)
 */
     skt_ip_t & ip = proc->ip;
     pe = proc->pe;
-    bool newEntry = true;
-    for (const skt_ip_t & entry : hostTable)
-    {
-      if (memcmp(&entry, &ip, sizeof(skt_ip_t)) == 0)
-      {
-        newEntry = false;
-        break;
-      }
+    auto iter = hostTable.find(ip);
+    if (iter != hostTable.end()) {
+      rec = iter->second;
     }
-    if (newEntry)
-    {
+    else {
       proc->nodeID = pe;           // we will compact the node ID later
       rec = proc;
-      hostTable.push_back(ip);
+      hostTable.emplace(ip, proc);
     }
     topomsg->nodes[pe] = rec->nodeID;
     rec->rank ++;
