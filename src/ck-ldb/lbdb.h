@@ -18,6 +18,7 @@
 #endif
 #include <inttypes.h>
 #include <list>
+#include <vector>
 
 class LBManager;//Forward declaration
 
@@ -151,6 +152,7 @@ struct LDObjData {
 #if CMK_LB_CPUTIMER
   LBRealType cpuTime;
 #endif
+  std::vector<LBRealType> vectorLoad;
 #if ! COMPRESS_LDB
   LBRealType minWall, maxWall;
 #endif
