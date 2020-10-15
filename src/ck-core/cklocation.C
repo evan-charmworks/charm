@@ -1547,6 +1547,11 @@ void CkMigratable::UserSetLBLoad() {
 void CkMigratable::setObjTime(double cputime) {
 	myRec->setObjTime(cputime);
 }
+
+void CkMigratable::setObjTime(double cputime, int phase) {
+  myRec->setObjTime(cputime, phase);
+}
+
 double CkMigratable::getObjTime() {
 	return myRec->getObjTime();
 }
@@ -1786,6 +1791,7 @@ void CkMigratable::CkAddThreadListeners(CthThread tid, void *msg)
 }
 #else
 void CkMigratable::setObjTime(double cputime) {}
+void CkMigratable::setObjTime(double cputime, int phase) {}
 double CkMigratable::getObjTime() {return 0.0;}
 const std::vector<LBRealType> CkMigratable::getObjVectorLoad() const
 {
@@ -1879,6 +1885,9 @@ void CkLocRec::stopTiming(int ignore_running) {
 }
 void CkLocRec::setObjTime(double cputime) {
 	lbmgr->EstObjLoad(ldHandle, cputime);
+}
+void CkLocRec::setObjTime(double cputime, int phase) {
+  lbmgr->EstObjLoad(ldHandle, cputime, phase);
 }
 double CkLocRec::getObjTime() {
         LBRealType walltime, cputime;
@@ -3326,4 +3335,3 @@ void CkLocMgr::doneInserting(void)
 #endif
 
 #include "CkLocation.def.h"
-
