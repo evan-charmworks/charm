@@ -276,11 +276,6 @@ public:
     if (i.dimension == 1) {
       //Map 1D integer indices in simple round-robin fashion
       int ans = (i.data()[0])%CkNumPes();
-#if CMK_FAULT_EVAC
-      while(!CmiNodeAlive(ans) || (ans == CkMyPe() && CkpvAccess(startedEvac))){
-        ans = (ans+1)%CkNumPes();
-      }
-#endif
       return ans;
     }
     else {
@@ -289,11 +284,6 @@ public:
         //Map other indices based on their hash code, mod a big prime.
         unsigned int hash=(i.hash()+739)%1280107;
         int ans = (hash % CkNumPes());
-#if CMK_FAULT_EVAC
-        while(!CmiNodeAlive(ans)){
-          ans = (ans+1)%CkNumPes();
-        }
-#endif
         return ans;
       } else {
         if(!productsInit) { indexInit(); }
@@ -1434,10 +1424,6 @@ void CkMigratable::commonInit(void) {
     myRec->getMetaBalancer()->AdjustCountForNewContributor(atsync_iteration);
   }
 #endif
-
-#if CMK_FAULT_EVAC
-	AsyncEvacuate(true);
-#endif
 }
 
 CkMigratable::CkMigratable(void) {
@@ -1464,14 +1450,6 @@ void CkMigratable::pup(PUP::er& p)
   if (p.isPacking()) readyMigrate = myRec->isReadyMigrate();
   p | readyMigrate;
   if (p.isUnpacking()) myRec->ReadyMigrate(readyMigrate);
-#endif
-
-#if CMK_FAULT_EVAC
-  p | asyncEvacuate;
-  if (p.isUnpacking())
-  {
-    myRec->AsyncEvacuate(asyncEvacuate);
-  }
 #endif
 
   int epoch = -1;
@@ -2897,16 +2875,6 @@ void CkLocMgr::emigrate(CkLocRec *rec,int toPe)
 	CK_MAGICNUMBER_CHECK
 	if (toPe==CkMyPe()) return; //You're already there!
 
-#if CMK_FAULT_EVAC
-	/*
-		if the toProcessor is already marked as invalid, dont emigrate
-		Shouldn't happen but might
-	*/
-	if(!CmiNodeAlive(toPe)){
-		return;
-	}
-#endif
-
 	CkArrayIndex idx=rec->getIndex();
         CmiUInt8 id = rec->getID();
 
@@ -2943,11 +2911,7 @@ void CkLocMgr::emigrate(CkLocRec *rec,int toPe)
 		false,
 #endif
 		bufSize, managers.size(),
-#if CMK_FAULT_EVAC
-    rec->isBounced()
-#else
     false
-#endif
     );
 
 	{
@@ -3040,40 +3004,10 @@ void CkLocMgr::immigrate(CkArrayElementMigrateMessage *msg)
 		CkAbort("Array element's pup routine has a direction mismatch.\n");
 	}
 
-#if CMK_FAULT_EVAC
-	/*
-			if this element came in as a result of being bounced off some other process,
-			then it needs to be resumed. It is assumed that it was bounced because load 
-			balancing caused it to move into a processor which later crashed
-	*/
-	if(msg->bounced){
-		callMethod(rec,&CkMigratable::ResumeFromSync);
-	}
-#endif
-
 	if(!zcRgetsActive) {
 		//Let all the elements know we've arrived
 		callMethod(rec,&CkMigratable::ckJustMigrated);
 	}
-
-#if CMK_FAULT_EVAC
-	/*
-		If this processor has started evacuating array elements on it 
-		dont let new immigrants in. If they arrive send them to what
-		would be their correct homePE.
-		Leave a record here mentioning the processor where it got sent
-	*/
-	if(CkpvAccess(startedEvac)){
-		int newhomePE = getNextPE(idx);
-		DEBM((AA "Migrated into failed processor index size %s resent to %d \n" AB,idx2str(idx),newhomePE));	
-		int targetPE=getNextPE(idx);
-		//set this flag so that load balancer is not informed when
-		//this element migrates
-		rec->AsyncMigrate(true);
-		rec->Bounced(true);
-		emigrate(rec,targetPE);
-	}
-#endif
 
 	delete msg;
 }
