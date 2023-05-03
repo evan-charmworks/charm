@@ -84,6 +84,9 @@ CmiIdleLock_checkMessage
 #if CMK_AMD64
 #  include <immintrin.h>
 #endif
+#ifdef __APPLE__
+#  include <mach/thread_act.h>
+#endif
 #include <atomic>
 #include <thread>
 
@@ -353,6 +356,35 @@ static void *call_startfn(void *vindex)
 void StartInteropScheduler(void);
 void CommunicationServerThread(int sleepTime);
 
+#ifdef __APPLE__
+/*
+Inform the kernel that a thread should both get its own core and stay on that core.
+https://developer.apple.com/library/archive/releasenotes/Performance/RN-AffinityAPI/
+> By setting a (non-null) affinity tag for a thread, the thread is placed into the affinity set identified by the "tag".
+> A non-null tag is arbitrary and can convey application-specific information.
+> An application that wants to place a thread on every available processor would [...]: Set each thread with a distinct affinity tag.
+> Threads with affinity tags will tend to remain in place.
+*/
+static kern_return_t SetMachThreadAffinityPolicy()
+{
+  thread_t thread = pthread_mach_thread_np(pthread_self());
+  // Affinity tag namespaces are local to the process, except for fork without exec.
+  // Therefore, use PE instead of rank to account for scalable start.
+  // Add 1 because tag 0 is a sentinel for null.
+  integer_t tag = CmiMyPe() + 1;
+  thread_affinity_policy_data_t policy = { tag };
+  kern_return_t ret = thread_policy_set(thread, THREAD_AFFINITY_POLICY, (thread_policy_t)&policy, THREAD_AFFINITY_POLICY_COUNT);
+#if defined __arm__ || defined __arm64__
+  // Unfortunately, this API is not implemented on ARM platforms.
+  // https://github.com/apple/darwin-xnu/blob/main/osfmk/arm/cpu_affinity.h
+  CmiAssert(ret == KERN_SUCCESS || ret == KERN_NOT_SUPPORTED);
+#else
+  CmiAssert(ret == KERN_SUCCESS);
+#endif
+  return ret;
+}
+#endif
+
 static void *call_startfn(void *vindex)
 {
   size_t index = (size_t)vindex;
@@ -365,6 +397,10 @@ static void *call_startfn(void *vindex)
 #else
   CmiState state = Cmi_state_vector + index;
   pthread_setspecific(Cmi_state_key, state);
+#endif
+
+#ifdef __APPLE__
+  SetMachThreadAffinityPolicy();
 #endif
 
   ConverseRunPE(0);
@@ -486,6 +522,11 @@ static void CmiStartThreads(char **argv)
 #endif
 
   MACHSTATE(4,"CmiStartThreads done")
+
+#ifdef __APPLE__
+  // handle rank 0
+  SetMachThreadAffinityPolicy();
+#endif
 }
 
 static void CmiDestroyLocks(void)
