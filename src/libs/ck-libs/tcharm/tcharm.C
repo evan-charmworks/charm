@@ -95,7 +95,7 @@ void TCharm::procInit()
 #endif
 
   CtvInitialize(TCharm *,_curTCharm);
-  CtvAccess(_curTCharm)=NULL;
+  TCharm::getPtr() = nullptr;
   tcharm_initted=true;
   CtgInit();
 
@@ -146,7 +146,7 @@ void TCharm::procInit()
 void TCHARM_Api_trace(const char *routineName,const char *libraryName) noexcept
 {
 	if (!tcharm_tracelibs.isTracing(libraryName)) return;
-	TCharm *tc=CtvAccess(_curTCharm);
+	TCharm* tc = TCharm::getPtr();
 	char where[100];
 	if (tc==NULL) snprintf(where,sizeof(where),"[serial context on %d]",CkMyPe());
 	else snprintf(where,sizeof(where),"[%p> vp %d, p %d]",(void *)tc,tc->getElement(),CkMyPe());
@@ -181,7 +181,7 @@ static void startTCharmThread(TCharmInitMsg *msg)
        TCHARM_Thread_data_start_fn threadFn = getTCharmThreadFunction(msg->threadFn);
 	threadFn(msg->data);
 	TCharm::deactivateThread();
-	TCharm::getNULL()->done(0);
+	TCharm::getPtr()->done(0);
 }
 
 TCharm::TCharm(TCharmInitMsg *initMsg_)
@@ -207,7 +207,7 @@ TCharm::TCharm(TCharmInitMsg *initMsg_)
         CmiIsomallocContextEnableRandomAccess(heapContext);
     }
   }
-  CtvAccessOther(tid,_curTCharm)=this;
+  TCharm::getPtrOther(tid) = this;
   asyncMigrate = false;
   isStopped=true;
   exitWhenDone=initMsg->opts.exitWhenDone;
@@ -275,7 +275,7 @@ void TCharm::pup(PUP::er &p) {
 //Pack all user data
   // Set up TCHARM context for use during user's pup routines:
   if(isStopped) {
-    CtvAccess(_curTCharm)=this;
+    TCharm::getPtr() = this;
     activateThread(this);
   }
 
@@ -299,7 +299,7 @@ void TCharm::pup(PUP::er &p) {
   if(isStopped) {
     if (!CmiMemoryIs(CMI_MEMORY_IS_ISOMALLOC))
       deactivateThread();
-    CtvAccess(_curTCharm)=NULL;
+    TCharm::getPtr() = nullptr;
   }
 
   if (!p.isUnpacking())
@@ -322,7 +322,7 @@ void TCharm::pupThread(PUP::er &pc) {
 
     tid = CthPup(p, tid);
     if (pc.isUnpacking()) {
-      CtvAccessOther(tid,_curTCharm)=this;
+      TCharm::getPtrOther(tid) = this;
     }
     checkPupMismatch(pc,5139,"after TCHARM thread");
 }
@@ -839,7 +839,7 @@ FORTRAN_AS_C(TCHARM_BARRIER,TCHARM_Barrier,tcharm_barrier,(void),())
 CLINKAGE void TCHARM_Done(int exitcode)
 {
 	TCHARMAPI("TCHARM_Done");
-	TCharm *c=TCharm::getNULL();
+	TCharm* c = TCharm::getPtr();
 	if (!c) CkExit(exitcode);
 	else c->done(exitcode);
 }
@@ -849,7 +849,7 @@ FORTRAN_AS_C(TCHARM_DONE,TCHARM_Done,tcharm_done,(int *exitcode),(*exitcode))
 CLINKAGE double TCHARM_Wall_timer()
 {
   TCHARMAPI("TCHARM_Wall_timer");
-  TCharm *c=TCharm::getNULL();
+  TCharm* c = TCharm::getPtr();
   if(!c) return CkWallTimer();
   else { //Have to apply current thread's time offset
     return CkWallTimer()+c->getTimeOffset();

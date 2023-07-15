@@ -215,14 +215,16 @@ class TCharm: public CBase_TCharm
 	int add(const UserData &d) noexcept;
 	void *lookupUserData(int ud) noexcept;
 
+	static CMI_NOINLINE TCharm*& getPtr() noexcept { return CtvAccess(_curTCharm); }
+	static CMI_NOINLINE TCharm*& getPtrOther(CthThread t) noexcept { return CtvAccessOther(t, _curTCharm); }
 	inline static TCharm *get() noexcept {
-		TCharm *c=getNULL();
+		TCharm* c = getPtr();
 #if CMK_ERROR_CHECKING
 		if (!c) ::CkAbort("TCharm has not been initialized!\n");
 #endif
 		return c;
 	}
-	static CMI_NOINLINE TCharm *getNULL() noexcept {return CtvAccess(_curTCharm);}
+
 	inline CthThread getThread() noexcept {return tid;}
 	inline const CProxy_TCharm &getProxy() const noexcept {return threadInfo.tProxy;}
 	inline int getElement() const noexcept {return threadInfo.thisElement;}
@@ -298,7 +300,7 @@ class TCharm: public CBase_TCharm
 
 	//Entering thread context: turn stuff on
 	static void activateThread() noexcept {
-		TCharm *tc = getNULL();
+		TCharm* tc = getPtr();
 		activateThread(tc);
 	}
 	static void activateThread(TCharm *tc) noexcept {
@@ -307,7 +309,7 @@ class TCharm: public CBase_TCharm
 	}
 	//Leaving this thread's context: turn stuff back off
 	static void deactivateThread() noexcept {
-		TCharm *tc = getNULL();
+		TCharm* tc = getPtr();
 		if (tc != nullptr)
 			CthInterceptionsDeactivatePush(tc->getThread());
 	}

@@ -840,12 +840,18 @@ CkpvDeclare(Builtin_kvs, bikvs);
 CkpvDeclare(int, ampiThreadLevel);
 CkpvDeclare(AmpiMsgPool, msgPool);
 
+static CMI_NOINLINE ampiParent*& getParentPtr() noexcept { return CtvAccess(ampiPtr); }
+static CMI_NOINLINE ampiParent*& getParentPtrOther(CthThread t) noexcept { return CtvAccessOther(t, ampiPtr); }
+static CMI_NOINLINE bool& getInitDone() noexcept { return CtvAccess(ampiInitDone); }
+static CMI_NOINLINE void*& getStackBottom() noexcept { return CtvAccess(stackBottom); }
+static CMI_NOINLINE bool& getFinalized() noexcept { return CtvAccess(ampiFinalized); }
+
 CLINKAGE
 long ampiCurrentStackUsage(void){
   int localVariable;
 
   unsigned long p1 =  (unsigned long)(uintptr_t)((void*)&localVariable);
-  unsigned long p2 =  (unsigned long)(uintptr_t)(CtvAccess(stackBottom));
+  unsigned long p2 =  (unsigned long)(uintptr_t)(getStackBottom());
 
   if(p1 > p2)
     return p1 - p2;
@@ -1145,7 +1151,7 @@ void AMPI_threadstart(void *data)
 
   // Set a pointer to somewhere close to the bottom of the stack.
   // This is used for roughly estimating the stack usage later.
-  CtvAccess(stackBottom) = &argv;
+  getStackBottom() = &argv;
 
   int ret = 0;
   // Only one of the following main functions actually runs application code,
@@ -1198,7 +1204,7 @@ static void removeUnimportantArrayObjsfromPeCache() noexcept {
  */
 static ampi *ampiInit(char **argv) noexcept
 {
-  if (CtvAccess(ampiInitDone)) return NULL; /* Already called ampiInit */
+  if (getInitDone()) return nullptr; /* Already called ampiInit */
   STARTUP_DEBUG("ampiInit> begin")
 
   MPI_Comm new_world;
@@ -1248,8 +1254,8 @@ static ampi *ampiInit(char **argv) noexcept
 
   // Find our ampi object:
   ampi *ptr=(ampi *)TCharm::get()->semaGet(AMPI_TCHARM_SEMAID);
-  CtvAccess(ampiInitDone)=true;
-  CtvAccess(ampiFinalized)=false;
+  getInitDone() = true;
+  getFinalized() = false;
   STARTUP_DEBUG("ampiInit> complete")
 
   ampiParent* pptr = getAmpiParent();
@@ -1456,7 +1462,7 @@ void ampiParent::pup(PUP::er &p) noexcept {
 void ampiParent::prepareCtv() noexcept {
   thread=threads[thisIndex].ckLocal();
   if (thread==NULL) CkAbort("AMPIParent cannot find its thread!\n");
-  CtvAccessOther(thread->getThread(),ampiPtr) = this;
+  getParentPtrOther(thread->getThread()) = this;
   STARTUP_DEBUG("ampiParent> found TCharm")
 }
 
@@ -1527,15 +1533,19 @@ void ampiParent::setUserJustMigratedFn(MPI_MigrateFn f) noexcept {
 
 void ampiParent::ckAboutToMigrate() noexcept {
   if (userAboutToMigrateFn) {
-    const auto oldTCharm = CtvAccess(_curTCharm);
-    const auto oldAMPI = CtvAccess(ampiPtr);
-    CtvAccess(_curTCharm) = thread;
-    CtvAccess(ampiPtr) = this;
+    auto& pTCharm = TCharm::getNULL();
+    auto& pAMPI = getParentPtr();
+    const auto oldTCharm = pTCharm;
+    const auto oldAMPI = pAMPI;
+    pTCharm = thread;
+    pAMPI = this;
     const int old = CthInterceptionsTemporarilyActivateStart(thread->getThread());
+
     (*userAboutToMigrateFn)();
+
     CthInterceptionsTemporarilyActivateEnd(thread->getThread(), old);
-    CtvAccess(_curTCharm) = oldTCharm;
-    CtvAccess(ampiPtr) = oldAMPI;
+    pTCharm = oldTCharm;
+    pAMPI = oldAMPI;
   }
 }
 
@@ -1548,15 +1558,20 @@ void ampiParent::ckJustMigrated() noexcept {
 void ampiParent::resumeAfterMigration() noexcept {
   if (didMigrate && userJustMigratedFn) {
     didMigrate = false;
-    const auto oldTCharm = CtvAccess(_curTCharm);
-    const auto oldAMPI = CtvAccess(ampiPtr);
-    CtvAccess(_curTCharm) = thread;
-    CtvAccess(ampiPtr) = this;
+
+    auto& pTCharm = TCharm::getNULL();
+    auto& pAMPI = getParentPtr();
+    const auto oldTCharm = pTCharm;
+    const auto oldAMPI = pAMPI;
+    pTCharm = thread;
+    pAMPI = this;
     const int old = CthInterceptionsTemporarilyActivateStart(thread->getThread());
+
     (*userJustMigratedFn)();
+
     CthInterceptionsTemporarilyActivateEnd(thread->getThread(), old);
-    CtvAccess(_curTCharm) = oldTCharm;
-    CtvAccess(ampiPtr) = oldAMPI;
+    pTCharm = oldTCharm;
+    pAMPI = oldAMPI;
   }
 
   thread->start();
@@ -4077,7 +4092,7 @@ void AmpiRequestList::pup(PUP::er &p, AmpiRequestPool* pool) noexcept {
 
 //------------------ External Interface -----------------
 CMI_WARN_UNUSED_RESULT ampiParent *getAmpiParent() noexcept {
-  ampiParent *p = CtvAccess(ampiPtr);
+  ampiParent* p = getParentPtr();
 #if CMK_ERROR_CHECKING
   if (p==NULL) CkAbort("Cannot call MPI routines before AMPI is initialized.\n");
 #endif
@@ -4093,7 +4108,7 @@ CMI_WARN_UNUSED_RESULT ampi *getAmpiInstance(MPI_Comm comm) noexcept {
 }
 
 bool isAmpiThread() noexcept {
-  return (CtvAccess(ampiPtr) != NULL);
+  return getParentPtr() != nullptr;
 }
 
 inline static AmpiRequestList &getReqs() noexcept {
@@ -4203,14 +4218,14 @@ AMPI_API_IMPL(int, MPI_Init, int *p_argc, char*** p_argv)
 AMPI_API_IMPL(int, MPI_Initialized, int *isInit)
 {
   AMPI_API_INIT("AMPI_Initialized", isInit);
-  *isInit=CtvAccess(ampiInitDone);
+  *isInit = getInitDone();
   return MPI_SUCCESS;
 }
 
 AMPI_API_IMPL(int, MPI_Finalized, int *isFinalized)
 {
   AMPI_API_INIT("AMPI_Finalized", isFinalized);
-  *isFinalized=(CtvAccess(ampiFinalized)) ? 1 : 0;
+  *isFinalized = getFinalized() ? 1 : 0;
   return MPI_SUCCESS;
 }
 
@@ -4359,7 +4374,7 @@ AMPI_API_IMPL(int, MPI_Finalize, void)
 #if AMPI_PRINT_IDLE
   CkPrintf("[%d] Idle time %fs.\n", CkMyPe(), totalidle);
 #endif
-  CtvAccess(ampiFinalized)=true;
+  getFinalized() = true;
 
 #if AMPI_PRINT_MSG_SIZES
   getAmpiParent()->printMsgSizes();
