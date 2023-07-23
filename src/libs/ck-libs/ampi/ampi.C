@@ -1194,7 +1194,9 @@ static void removeUnimportantArrayObjsfromPeCache() noexcept {
   ArrayObjMap& arrayObjs = CkpvAccess(array_objs);
   arrayObjs.erase(pptr->getThread()->ckGetID().getID());
   arrayObjs.erase(pptr->ckGetID().getID());
-  arrayObjs.erase(getAmpiInstance(MPI_COMM_SELF)->ckGetID().getID());
+  auto selfptr = pptr->comm2ampi(MPI_COMM_SELF);
+  if (selfptr != nullptr) // Why would this be false?
+    arrayObjs.erase(selfptr->ckGetID().getID());
 }
 
 /*
@@ -1533,19 +1535,15 @@ void ampiParent::setUserJustMigratedFn(MPI_MigrateFn f) noexcept {
 
 void ampiParent::ckAboutToMigrate() noexcept {
   if (userAboutToMigrateFn) {
-    auto& pTCharm = TCharm::getNULL();
-    auto& pAMPI = getParentPtr();
-    const auto oldTCharm = pTCharm;
-    const auto oldAMPI = pAMPI;
-    pTCharm = thread;
-    pAMPI = this;
+    TCharm::getPtr() = thread;
+    getParentPtr() = this;
     const int old = CthInterceptionsTemporarilyActivateStart(thread->getThread());
+    TCharm::getPtr() = thread;
+    getParentPtr() = this;
 
     (*userAboutToMigrateFn)();
 
     CthInterceptionsTemporarilyActivateEnd(thread->getThread(), old);
-    pTCharm = oldTCharm;
-    pAMPI = oldAMPI;
   }
 }
 
@@ -1559,19 +1557,15 @@ void ampiParent::resumeAfterMigration() noexcept {
   if (didMigrate && userJustMigratedFn) {
     didMigrate = false;
 
-    auto& pTCharm = TCharm::getNULL();
-    auto& pAMPI = getParentPtr();
-    const auto oldTCharm = pTCharm;
-    const auto oldAMPI = pAMPI;
-    pTCharm = thread;
-    pAMPI = this;
+    TCharm::getPtr() = thread;
+    getParentPtr() = this;
     const int old = CthInterceptionsTemporarilyActivateStart(thread->getThread());
+    TCharm::getPtr() = thread;
+    getParentPtr() = this;
 
     (*userJustMigratedFn)();
 
     CthInterceptionsTemporarilyActivateEnd(thread->getThread(), old);
-    pTCharm = oldTCharm;
-    pAMPI = oldAMPI;
   }
 
   thread->start();
